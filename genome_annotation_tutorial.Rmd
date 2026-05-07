@@ -128,7 +128,7 @@ This tutorial uses estrogen receptor binding data from ENCODE style peak files. 
 The workflow finds the raw peak like file inside the `ERBS` package. We inspect a few lines before importing.
 
 ```{r}
-# Find the ERBS data files bundled with the package
+# Find the ERBS data files bundled with the package and store their locations
 erbs_files <- dir(system.file("extdata", package = "ERBS"), full.names = TRUE)
 erbs_files
 
@@ -139,15 +139,17 @@ f1 <- erbs_files[1]
 readLines(f1, n = 4)
 ```
 
-The file used here is `ENCFF001VEH.narrowPeak`. The preview shows chromosome, start, end, and peak metadata, so the next step is import into `GRanges`
+The file used here is `ENCFF001VEH.narrowPeak`. The preview shows the chromosome the peak is located on, the genomic interval (start, end), and peak metadata (peakID/name, score, strand, signal strength, statistical confidence, adjusted confidence, peak summit offset). 
+
+The next step is to import the raw peak file into `GRanges`
 
 ## Import as a computable genomic object
 
 ```{r}
-library(GenomicRanges)
-library(GenomeInfoDb)
-library(S4Vectors)
-library(rtracklayer)
+library(GenomicRanges) #stores DNA regions
+library(GenomeInfoDb) #stores genome information
+library(S4Vectors) #stores metadata columns
+library(rtracklayer) #imports genomics files
 ```
 
 These libraries provide genome interval objects, genome labels, metadata columns, and file import.
@@ -157,7 +159,7 @@ These libraries provide genome interval objects, genome labels, metadata columns
 erbs_peaks <- import(f1, format = "bedGraph")
 erbs_peaks
 
-# Mark the coordinate system used by these peaks
+# Label these genomic positions as hg19 human genome coordinates
 genome(erbs_peaks) <- "hg19"
 erbs_peaks
 ```
@@ -177,7 +179,7 @@ candidate_names <- c(
 )
 names(mcols(erbs_peaks)) <- candidate_names[seq_len(ncol(mcols(erbs_peaks)))]
 
-# Add a simple ID for each peak
+# Add a simple unique ID for each peak
 mcols(erbs_peaks)$peak_id <- paste0("ERBS_peak_", seq_along(erbs_peaks))
 
 head(as.data.frame(mcols(erbs_peaks)))
@@ -190,36 +192,44 @@ The metadata columns now have readable names such as `signalValue`, `qValue`, an
 ```{r}
 # Count peaks
 length(erbs_peaks)
+```
 
+```{r}
 # List chromosomes present in the peak set
 seqlevels(erbs_peaks)
-
+```
+```{r}
 # Confirm the genome build label
 genome(erbs_peaks)
-
+```
+```{r}
 # Summarize peak widths
 summary(width(erbs_peaks))
+```
 
+```{r}
 # Inspect the first few peaks as a table
 head(as.data.frame(erbs_peaks))
 ```
 
-This run has 1,873 peaks. Widths range from 247 bp to 11,894 bp, with a median of 1,310 bp. Once the peaks are in `GRanges`
+This run has 1,873 peaks. Widths range from 247 bp to 11,894 bp, with a median of 1,310 bp, once the peaks are in `GRanges`
+
+bp (base pairs) = Basic unit of DNA length
 
 ## Load hg19 sequence and gene models
 
 ```{r}
-library(BSgenome.Hsapiens.UCSC.hg19)
-library(TxDb.Hsapiens.UCSC.hg19.knownGene)
-library(Homo.sapiens)
-library(AnnotationDbi)
-library(GenomicFeatures)
-library(GenomicRanges)
+library(BSgenome.Hsapiens.UCSC.hg19) #Loads the actual human DNA sequence for the hg19 genome
+library(TxDb.Hsapiens.UCSC.hg19.knownGene) #loads known gene locations
+library(Homo.sapiens) #loads gene name information and ID mappings
+library(AnnotationDbi) #annotations
+library(GenomicFeatures) #gene features
+library(GenomicRanges) #genomi
 
 # Reference genome sequence
 Hsapiens
 
-# Transcript database for hg19 knownGene models
+# Transcript database for hg19 known Gene models
 txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
 txdb
 
@@ -237,6 +247,8 @@ all_genes
 `BSgenome` supplies the `hg19` sequence and `TxDb` supplies 28,622 gene ranges on the same build
 
 ## Genome build consistency
+
+Before overlapping peaks with genes, the chromosome names and genome versions must match. 
 
 ```{r}
 # Genome label from the reference sequence
@@ -260,6 +272,11 @@ This section uses the whole ERBS dataset. We are not yet zooming to ESRRA. The g
 
 ## Prepare annotation ranges
 
+Recall definitions:
+- Promoter: a DNA region near the start of a gene where regulatory proteins often bind. Important for turning genes on and controlling gene activity (say 2,000 DNA letters before the gene start and 200 DNA letters after the start).
+- Transcription Start Site (TSS): the exact DNA position where the gene reading begins.
+- Exons: protein-coding pieces. The parts that actually contribute to making proteins.
+
 ```{r}
 # Promoter window uses 2 kb upstream and 200 bp downstream
 promoter_ranges <- promoters(all_genes, upstream = 2000, downstream = 200)
@@ -276,17 +293,22 @@ length(promoter_ranges)
 length(all_exons)
 ```
 
-The annotation targets are 28,622 genes, 28,622 promoter windows, and 672,344 exon ranges, Promoters are defined here as 2 kb upstream and 200 bp downstream of the TSS
+The annotation targets are 28,622 genes, 28,622 promoter windows, and 672,344 exon ranges. Promoters are defined here as 2 kb upstream and 200 bp downstream of the TSS
+
+Recall definitions:
+- Introns: skipped DNA regions inside genes before protein production
+- CDS (coding DNA sequence): the part that determines the protein sequence
+- UTR (Untranslated Region): part of the gene transcript not converted into protein. Help regulate stability, translation, gene control (5' UTR - located before CDS, 3' UTR - located after CDS)
 
 ```{r}
-# Introns are grouped by transcript before flattening
+# Introns are grouped by transcript first then flattened
 introns_by_tx <- intronsByTranscript(txdb, use.names = FALSE)
 all_introns <- unlist(introns_by_tx, use.names = FALSE)
 
 # Coding sequence ranges are available directly from TxDb
 all_cds <- cds(txdb)
 
-# UTR ranges are grouped by transcript before flattening
+# UTR ranges are grouped by transcript first then flattened
 five_utrs_by_tx <- fiveUTRsByTranscript(txdb, use.names = FALSE)
 three_utrs_by_tx <- threeUTRsByTranscript(txdb, use.names = FALSE)
 all_five_utrs <- unlist(five_utrs_by_tx, use.names = FALSE)
@@ -311,7 +333,9 @@ annotated_peaks <- erbs_peaks
 length(annotated_peaks)
 ```
 
-The working annotation object starts with all 1,873 imported ERBS peaks
+The working annotation object starts with all 1,873 imported ERBS peaks.
+
+Now, we find the closest gene to each ERBS peak and how far away that gene is.
 
 ```{r}
 # Find the nearest gene range for each peak
@@ -325,6 +349,7 @@ nearest_distance <- rep(NA_integer_, length(annotated_peaks))
 dtn <- distanceToNearest(annotated_peaks, all_genes, ignore.strand = TRUE)
 nearest_distance[queryHits(dtn)] <- mcols(dtn)$distance
 
+# Add nearest gene and distance information to the peaks
 mcols(annotated_peaks)$nearest_gene_id <- nearest_gene_id
 mcols(annotated_peaks)$distance_to_nearest_gene <- nearest_distance
 
@@ -334,7 +359,9 @@ knitr::kable(head(as.data.frame(mcols(annotated_peaks)[, c(
 )]), 8))
 ```
 
-Each peak now has a nearest Entrez gene ID and a distance to that gene range. Many peaks overlap a gene body, so their distance is 0 bp
+Each peak now has a nearest Entrez gene ID and a distance to that gene range. Many peaks overlap a gene body, so their distance is 0 bp. This information helps to guess which genes the binding signals might influence.
+
+Note that a peak can be close to a gene overall while still being far from its important control region. Hence, we also find the nearest TSS to each ERBS peak and how far away it is.
 
 ```{r}
 # Find the nearest transcription start site for each peak
@@ -357,11 +384,14 @@ knitr::kable(head(as.data.frame(mcols(annotated_peaks)[, c(
 )]), 8))
 ```
 
-The TSS distance gives a promoter oriented view of each peak. It is different from distance to the full gene body because genes can be long
+The TSS distance gives a promoter oriented view of each peak. It is different from distance to the full gene body because genes can be long and the biologically important control region is usually near the TSS. 
 
 ## Add TSS distance bins
 
+Here, we count how many peaks fall into each TSS distance category so as to see whether protein binding events tend to occur near genes.
+
 ```{r}
+# Define TSS distance ranges and add labels
 tss_breaks <- c(-1, 0, 1000, 5000, 10000, 50000, Inf)
 tss_labels <- c(
   "0 bp",
@@ -372,41 +402,53 @@ tss_labels <- c(
   "over 50000 bp"
 )
 
+# Categorize each peak
 mcols(annotated_peaks)$tss_distance_bin <- cut(
   mcols(annotated_peaks)$distance_to_nearest_tss,
   breaks = tss_breaks,
   labels = tss_labels
 )
 
+# Count peaks in each category
 tss_interval_bins <- as.data.frame(table(mcols(annotated_peaks)$tss_distance_bin))
 names(tss_interval_bins) <- c("distance_bin", "peaks")
 
 knitr::kable(tss_interval_bins)
 ```
 
-The bins turn exact TSS distances into a quick promoter proximity summary
+The bins turn exact TSS distances into a quick promoter proximity summary.
 
 ## Add peak summit annotation
+Now we calculate the summit. The summit is the strongest point inside a peak when the peak caller reports an offset. An offset is how far the summit is from the start of the peak. 
 
 ```{r}
+# Read the summit offset
 peak_offset <- suppressWarnings(as.integer(mcols(annotated_peaks)$peak_offset))
+
+# Calculate the summit position
 summit_position <- start(annotated_peaks) + peak_offset
+
+# Check validity of the summit
 valid_summit <- !is.na(summit_position) &
   summit_position >= start(annotated_peaks) &
   summit_position <= end(annotated_peaks)
 
+# Store valid summits
 mcols(annotated_peaks)$summit_position <- NA_integer_
 mcols(annotated_peaks)$summit_position[valid_summit] <- summit_position[valid_summit]
 
+# Count summits
 data.frame(
   peaks = length(annotated_peaks),
   peaks_with_summit = sum(valid_summit)
 )
 ```
+The table shows how many peaks have a usable summit position.
 
-The summit is the strongest point inside a peak when the peak caller reports an offset. The table shows how many peaks have a usable summit position
+Now, we check how far the summit inside each peak is from the nearest TSS.
 
 ```{r}
+# Create a new genomic object containing only the summit points. Summit is made into a tiny 1bp region
 peak_summits <- GRanges(
   seqnames = seqnames(annotated_peaks)[valid_summit],
   ranges = IRanges(start = summit_position[valid_summit], width = 1),
@@ -414,15 +456,20 @@ peak_summits <- GRanges(
   seqinfo = seqinfo(annotated_peaks)
 )
 
+# Measure distance from each summit to nearest TSS
 summit_tss_distance <- rep(NA_integer_, length(annotated_peaks))
 dts <- distanceToNearest(peak_summits, tss_ranges, ignore.strand = TRUE)
 summit_tss_distance[which(valid_summit)[queryHits(dts)]] <- mcols(dts)$distance
 
+# Stores summit-to-TSS distance for each peak
 mcols(annotated_peaks)$summit_distance_to_nearest_tss <- summit_tss_distance
 summary(mcols(annotated_peaks)$summit_distance_to_nearest_tss)
+head(as.data.frame(mcols(annotated_peaks)))
 ```
 
-Summit distance focuses the TSS comparison on one base per peak rather than the full peak interval
+Summit distance focuses the TSS comparison on one base per peak rather than the full peak interval.
+
+Here, we group the summits by their distance from the TSS and count how many fall into each distance range.
 
 ```{r}
 mcols(annotated_peaks)$summit_tss_distance_bin <- cut(
@@ -432,17 +479,19 @@ mcols(annotated_peaks)$summit_tss_distance_bin <- cut(
 )
 
 summit_interval_bins <- as.data.frame(table(mcols(annotated_peaks)$summit_tss_distance_bin))
-names(summit_interval_bins) <- c("distance_bin", "peaks")
+names(summit_interval_bins) <- c("distance_bin", "summits")
 
 knitr::kable(summit_interval_bins)
 ```
 
-The summit based bins are a stricter view of how close the strongest point of each peak is to a TSS
+The summit based bins are a stricter view of how close the strongest point of each peak is to a TSS.
 
 ## Add gene symbols
 
+Internal gene ID's are now converted into human-readable gene names.
+
 ```{r}
-# Convert Entrez gene IDs to gene symbols
+# Convert Entrez gene IDs to gene symbols using the Homo.sapiens gene database
 nearest_symbol <- AnnotationDbi::mapIds(
   Homo.sapiens,
   keys = mcols(annotated_peaks)$nearest_gene_id,
@@ -460,6 +509,7 @@ nearest_tss_symbol <- AnnotationDbi::mapIds(
   multiVals = "first"
 )
 
+# Store results
 mcols(annotated_peaks)$nearest_symbol <- unname(nearest_symbol)
 mcols(annotated_peaks)$nearest_tss_symbol <- unname(nearest_tss_symbol)
 
@@ -473,6 +523,8 @@ Gene symbols make the table easier to read, while the Entrez IDs keep the link t
 
 ## Add feature overlap annotations
 
+We now check if each peak overlaps important parts of the genes.
+
 ```{r}
 # Mark peaks that touch promoter windows
 mcols(annotated_peaks)$overlaps_promoter <- countOverlaps(
@@ -480,18 +532,21 @@ mcols(annotated_peaks)$overlaps_promoter <- countOverlaps(
   promoter_ranges,
   ignore.strand = TRUE
 ) > 0
+
 # Mark peaks that touch exons
 mcols(annotated_peaks)$overlaps_exon <- countOverlaps(
   annotated_peaks,
   all_exons,
   ignore.strand = TRUE
 ) > 0
+
 # Mark peaks that touch gene bodies
 mcols(annotated_peaks)$overlaps_gene_body <- countOverlaps(
   annotated_peaks,
   all_genes,
   ignore.strand = TRUE
 ) > 0
+
 head(as.data.frame(mcols(annotated_peaks)[, c(
   "overlaps_promoter",
   "overlaps_exon",
@@ -501,23 +556,32 @@ head(as.data.frame(mcols(annotated_peaks)[, c(
 
 These three logical columns mark whether each peak touches promoter, exon, or gene body ranges
 
+We now check if each peak overlaps specific structural parts of the genes.
 ```{r}
 # Mark peaks that touch transcript structural features
+
+# Mark peaks that overlap introns
 mcols(annotated_peaks)$overlaps_intron <- countOverlaps(
   annotated_peaks,
   all_introns,
   ignore.strand = TRUE
 ) > 0
+
+# Mark peaks that overlap CDS
 mcols(annotated_peaks)$overlaps_cds <- countOverlaps(
   annotated_peaks,
   all_cds,
   ignore.strand = TRUE
 ) > 0
+
+# Mark peaks that overlap 5' untranslated region
 mcols(annotated_peaks)$overlaps_five_utr <- countOverlaps(
   annotated_peaks,
   all_five_utrs,
   ignore.strand = TRUE
 ) > 0
+
+# Mark peaks that overlap 3' untranslated region
 mcols(annotated_peaks)$overlaps_three_utr <- countOverlaps(
   annotated_peaks,
   all_three_utrs,
@@ -536,7 +600,9 @@ knitr::kable(head(as.data.frame(mcols(annotated_peaks)[, c(
 )]), 8))
 ```
 
-This preview shows the added structural feature flags for the first few peaks
+This preview shows the added structural feature flags for the first few peaks.
+
+Now, we check how many peaks overlap each genomic feature to gain more insights into where binding signals most often occur.
 
 ```{r}
 overlap_counts <- data.frame(
@@ -563,23 +629,28 @@ overlap_counts <- data.frame(
 knitr::kable(overlap_counts)
 ```
 
-The overlap counts are not mutually exclusive because genomic features can overlap
+The overlap counts are not mutually exclusive because genomic features can overlap.
 
 ## Add promoter linked genes
 
+We now find the exact promoter overlaps and record which peak overlaps which gene's promoter.
+
 ```{r}
+# Find every case where an ERBS peak touches a promoter region
 promoter_hits <- findOverlaps(
   annotated_peaks,
   promoter_ranges,
   ignore.strand = TRUE
 )
 
+# Create a table with row number of the peak that overlapped promoters, the peak ID and the gene ID whose promoter is overlapped
 promoter_links <- data.frame(
   peak_index = queryHits(promoter_hits),
   peak_id = mcols(annotated_peaks)$peak_id[queryHits(promoter_hits)],
   promoter_gene_id = promoter_ranges$gene_id[subjectHits(promoter_hits)]
 )
 
+# Convert numeric gene IDs into readable gene symbols
 promoter_symbol_lookup <- AnnotationDbi::mapIds(
   Homo.sapiens,
   keys = unique(promoter_links$promoter_gene_id),
@@ -589,7 +660,7 @@ promoter_symbol_lookup <- AnnotationDbi::mapIds(
 )
 ```
 
-This cell builds one row for each peak to promoter gene link
+This cell builds one row for each peak to promoter gene link.
 
 ```{r}
 promoter_links$promoter_symbol <- unname(
@@ -599,21 +670,27 @@ promoter_links$promoter_symbol <- unname(
 knitr::kable(head(promoter_links, 12))
 ```
 
-The table shows individual promoter gene links, so repeated peak IDs mean that one peak links to more than one promoter gene
+The table shows individual promoter gene links, so repeated peak IDs mean that one peak links to more than one promoter gene.
+
+Now, we take the promoter-overlap results and add them back as new annotation columns to the main peak table. So for each ERBS peak, we record which gene promoter it overlaps.
 
 ```{r}
+# Create a clean list of unique gene IDs
 collapse_unique <- function(x) {
   paste(sort(unique(x[!is.na(x) & x != ""])), collapse = ", ")
 }
 
+# Group promoter hits by peak
 id_by_peak <- split(promoter_links$promoter_gene_id, promoter_links$peak_index)
 symbol_by_peak <- split(promoter_links$promoter_symbol, promoter_links$peak_index)
 
+# Fill in peaks that actaully overlap promoters
 promoter_gene_ids <- rep("", length(annotated_peaks))
 promoter_symbols <- rep("", length(annotated_peaks))
 promoter_gene_ids[as.integer(names(id_by_peak))] <- vapply(id_by_peak, collapse_unique, character(1))
 promoter_symbols[as.integer(names(symbol_by_peak))] <- vapply(symbol_by_peak, collapse_unique, character(1))
 
+# Store the results in annotated peaks
 mcols(annotated_peaks)$promoter_gene_ids <- promoter_gene_ids
 mcols(annotated_peaks)$promoter_symbols <- promoter_symbols
 mcols(annotated_peaks)$promoter_gene_count <- tabulate(
@@ -637,6 +714,8 @@ This preview is peak centered, with all promoter linked symbols collapsed into o
 
 ## Add context labels
 
+Initially, every peak is labeled "distal/intergenic". If a peak overlaps a gene, it becomes "gene body". If a peak overlaps an exon, it upgrades to "exon". If it overlaps a promoter, it becomes a "promoter (and an exon)"
+
 ```{r}
 # Assign one context label per peak
 primary_context <- rep("distal/intergenic", length(annotated_peaks))
@@ -649,6 +728,18 @@ mcols(annotated_peaks)$primary_context <- factor(
 )
 
 annotated_peaks
+
+#head(as.data.frame(mcols(annotated_peaks)))
+```
+```{r}
+knitr::kable(
+  head(as.data.frame(mcols(annotated_peaks)[, c(
+    "peak_id",
+    "nearest_symbol",
+    "primary_context",
+    "distance_to_nearest_tss"
+  )]), 10)
+)
 ```
 
 The full `GRanges` now carries nearest gene, nearest TSS, overlap, and primary context metadata for every peak
@@ -676,13 +767,18 @@ mcols(annotated_peaks)$detailed_context <- factor(
     "distal/intergenic"
   )
 )
+
+head(as.data.frame(mcols(annotated_peaks)))
 ```
 
 The detailed context label keeps one readable category per peak while using the new intron, CDS, and UTR overlap fields
 
 ## Add GC content from the reference genome
 
+Now, we extract the actual DNA sequence under each peak and measure how much of the sequence is made of G and C bases, storing that as the peak's GC content.
+
 ```{r}
+# Load DNA sequence tools
 library(Biostrings)
 
 # Extract the DNA sequence under each peak
@@ -705,7 +801,10 @@ GC content is computed from the `hg19` sequence under each peak, median is about
 ```{r}
 # Convert ranges to a regular table for display
 peak_table <- as.data.frame(annotated_peaks)
+
 dim(peak_table)
+
+peak_table
 ```
 
 The table has one row per peak and one column for each coordinate, signal, and annotation field
@@ -992,7 +1091,7 @@ esrra_neigh$symbol <- AnnotationDbi::mapIds(
   multiVals = "first"
 )
 
-esrra_neigh
+knitr::kable(esrra_neigh)
 ```
 
 In this `hg19` annotation, `ESRRA` is on `chr11` at `64,072,969-64,084,215`. The 500 kb neighborhood contains 27 gene ranges
@@ -1065,7 +1164,7 @@ At this point, we have these objects.
 
 # Gviz visualization of ERBS peaks and ESRRA gene context
 
-Genome visualization asks a different question from whole dataset summaries. Instead of asking "what do all peaks tend to overlap?", we would be looking towards "what evidence do I see at this genomic location?"
+Genome visualization asks a different question from whole dataset summaries. Instead of asking "what do all peaks tend to overlap?", it asks, "what evidence do I see at this specific genomic location?"
 
 ## Gene view
 
@@ -1101,6 +1200,9 @@ data.frame(chromosome = plot_chr, from = plot_from, to = plot_to)
 
 The plotting window is the ESRRA neighborhood used earlier, so the visual view stays connected to the same annotation object
 
+
+Now, we create two helper tracks for the genome visualization. A chromosome overview and a coordinate ruler. 
+
 ```{r}
 # Add chromosome and coordinate tracks
 idx_track <- IdeogramTrack(genome = "hg19", chromosome = plot_chr)
@@ -1109,8 +1211,11 @@ axis_track <- GenomeAxisTrack()
 class(idx_track)
 class(axis_track)
 ```
+The chromosome overview track displays the whole chromosome and highlights where the ESRRA region sits on it while the genomic coordinate ruler shows DNA positions along the chromosome.
 
 ## Gviz with the annotated ERBS peaks
+
+Now, we create a visualization track for ERBS peaks near ESRRA, using signal strengths when available so the plot can show how strong the binding signals are across the genomic region.
 
 ```{r}
 # Use signal values from the annotated peaks when they are available
@@ -1136,6 +1241,8 @@ if ("signalValue" %in% names(mcols(annotated_signal_track))) {
 
 class(annotated_peak_track)
 ```
+
+Now, we create the gene layer for the final genome visualization. This tells Gviz to draw the genes located near ESSRA.
 
 ```{r}
 # Add nearby gene models
